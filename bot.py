@@ -1,16 +1,16 @@
 """
-Bot Discord — Idade da Conta
+Bot Discord — Aniversários
 
 Conforme as diretrizes do Discord Developer Policy:
 - Usa apenas slash commands (interactions), sem Message Content Intent
 - Solicita permissões mínimas no servidor
-- Não armazena dados de usuários
+- Armazena a data de nascimento informada pelo usuário para lembretes anuais
 - Boas-vindas automáticas são opt-in (configuradas por administradores)
 """
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional, Union
 
@@ -27,6 +27,7 @@ GUILD_ID = os.getenv("GUILD_ID")
 ENABLE_WELCOME = os.getenv("ENABLE_WELCOME", "false").lower() in {"1", "true", "yes"}
 
 CONFIG_PATH = Path(__file__).parent / "guild_config.json"
+ANIVERSARIOS_PATH = Path(__file__).parent / "aniversarios.json"
 PRIVACY_URL = os.getenv("PRIVACY_URL", "")
 SUPPORT_URL = os.getenv("SUPPORT_URL", "")
 
@@ -34,14 +35,13 @@ SUPPORT_URL = os.getenv("SUPPORT_URL", "")
 PERMISSIONS_MINIMAS = 19456
 
 intents = discord.Intents.default()
-# Server Members Intent só é necessário para boas-vindas automáticas (opt-in).
 if ENABLE_WELCOME:
     intents.members = True
 
 bot = commands.Bot(
     command_prefix=commands.when_mentioned,
     intents=intents,
-    description="Consulta a idade da conta Discord via slash commands.",
+    description="Registra datas de nascimento e envia lembretes anuais de aniversário.",
 )
 
 
@@ -56,6 +56,19 @@ def carregar_config() -> dict:
 
 def salvar_config(config: dict) -> None:
     CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+
+def carregar_aniversarios() -> dict:
+    if not ANIVERSARIOS_PATH.exists():
+        return {}
+    try:
+        return json.loads(ANIVERSARIOS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def salvar_aniversarios(dados: dict) -> None:
+    ANIVERSARIOS_PATH.write_text(json.dumps(dados, indent=2), encoding="utf-8")
 
 
 def config_servidor(guild_id: int) -> dict:
@@ -73,46 +86,61 @@ def atualizar_servidor(guild_id: int, **kwargs) -> dict:
     atual.update(kwargs)
     config[chave] = atual
     salvar_config(config)
-    agora = datetime.now(timezone.utc)
-    delta = agora - created_at
+    return atual
 
-    anos = delta.days // 365
-    meses = (delta.days % 365) // 30
-    dias = delta.days % 30
 
-    partes = []
-    if anos:
-        partes.append(f"{anos} ano{'s' if anos != 1 else ''}")
-    if meses:
-        partes.append(f"{meses} m{'eses' if meses != 1 else 'ês'}")
-    if dias or not partes:
-        partes.append(f"{dias} dia{'s' if dias != 1 else ''}")
+def data_aniversario_no_ano(ano: int, nascimento: date) -> date:
+    try:
+        return date(ano, nascimento.month, nascimento.day)
+    except ValueError:
+        if nascimento.month == 2 and nascimento.day == 29:
+            return date(ano, 2, 28)
+        raise
 
-    idade = ", ".join(partes)
-    data = created_at.strftime("%d/%m/%Y às %H:%M UTC")
-    return f"**{idade}** (conta criada em {data})"
+
+def calcular_proximo_aniversario(nascimento: date, hoje: Optional[date] = None) -> date:
+    hoje = hoje or date.today()
+    aniversario_este_ano = data_aniversario_no_ano(hoje.year, nascimento)
+    if aniversario_este_ano >= hoje:
+        return aniversario_este_ano
+    return data_aniversario_no_ano(hoje.year + 1, nascimento)
+
+
+def formatar_dias_ate_aniversario(nascimento: date) -> str:
+    proximo = calcular_proximo_aniversario(nascimento)
+    delta = (proximo - date.today()).days
+    if delta == 0:
+        return "Hoje"
+    if delta == 1:
+        return "amanhã"
+    return f"em {delta} dias"
+
+
+def obter_aniversario_usuario(guild_id: int, user_id: int) -> Optional[date]:
+    dados = carregar_aniversarios()
+    payload = dados.get(str(guild_id), {}).get(str(user_id))
+    if not payload or not payload.get("nascimento"):
+        return None
+    try:
+        return date.fromisoformat(payload["nascimento"])
+    except ValueError:
+        return None
 
 
 def rodape_privacidade() -> str:
-    return "Dado público da API do Discord · Não armazenamos informações · Não é idade real"
+    return "Data de nascimento cadastrada por você · Lembretes anuais localmente armazenados"
 
 
-def embed_idade(usuario: Union[discord.User, discord.Member]) -> discord.Embed:
+def embed_aniversario(usuario: Union[discord.User, discord.Member], nascimento: date) -> discord.Embed:
+    proximo = calcular_proximo_aniversario(nascimento)
     embed = discord.Embed(
-        title="Idade da conta Discord",
-        description=(
-            "Tempo desde a criação da conta. "
-            "Isto **não** é a idade real da pessoa — o Discord não expõe aniversários via bot."
-        ),
-        color=discord.Color.blurple(),
+        title="Aniversário cadastrado",
+        description=f"Próximo aniversário de {usuario.mention} será em {proximo.strftime('%d/%m/%Y')} ({formatar_dias_ate_aniversario(nascimento)}).",
+        color=discord.Color.gold(),
     )
     embed.set_author(name=str(usuario), icon_url=usuario.display_avatar.url)
-    embed.add_field(name="Usuário", value=usuario.mention, inline=False)
-    embed.add_field(
-        name="Idade da conta",
-        value=formatar_idade_conta(usuario.created_at),
-        inline=False,
-    )
+    embed.add_field(name="Data de nascimento", value=nascimento.strftime("%d/%m/%Y"), inline=False)
+    embed.add_field(name="Próximo aniversário", value=proximo.strftime("%d/%m/%Y"), inline=False)
     embed.set_footer(text=rodape_privacidade())
     return embed
 
@@ -158,16 +186,57 @@ def requer_admin():
     return app_commands.check(predicate)
 
 
+async def verificar_aniversarios() -> None:
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        hoje = date.today()
+        dados = carregar_aniversarios()
+
+        for guild_id_str, usuarios in dados.items():
+            guild = bot.get_guild(int(guild_id_str))
+            if guild is None:
+                continue
+            canal = guild.system_channel or next(
+                (c for c in guild.text_channels if c.permissions_for(guild.me).send_messages),
+                None,
+            )
+            if canal is None:
+                continue
+
+            for usuario_id, payload in usuarios.items():
+                try:
+                    nascimento = date.fromisoformat(payload["nascimento"])
+                except (TypeError, ValueError):
+                    continue
+
+                ultimo_ano = payload.get("ultimo_ano")
+                if ultimo_ano == hoje.year:
+                    continue
+
+                if nascimento.month == hoje.month and nascimento.day == hoje.day:
+                    usuario = guild.get_member(int(usuario_id)) or await bot.fetch_user(int(usuario_id))
+                    mensagem = (
+                        f"🎉 Hoje é aniversário de {usuario.mention if hasattr(usuario, 'mention') else usuario}!"
+                        f"\nParabéns!"
+                    )
+                    await canal.send(mensagem)
+                    payload["ultimo_ano"] = hoje.year
+                    salvar_aniversarios(dados)
+
+        await discord.utils.sleep_until(datetime.combine(hoje + timedelta(days=1), datetime.min.time()))
+
+
 @bot.event
 async def on_ready():
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.watching,
-            name="/idade · /ajuda",
+            name="/aniversario · /ajuda",
         )
     )
     print(f"Bot conectado como {bot.user} (ID: {bot.user.id})")
     print(f"Intents: members={'sim' if ENABLE_WELCOME else 'não (padrão)'}")
+    bot.loop.create_task(verificar_aniversarios())
 
     if GUILD_ID:
         guild = discord.Object(id=int(GUILD_ID))
@@ -197,30 +266,77 @@ if ENABLE_WELCOME:
         if not canal.permissions_for(member.guild.me).send_messages:
             return
 
-        embed = embed_idade(member)
+        nascimento = obter_aniversario_usuario(member.guild.id, member.id)
+        if nascimento is None:
+            return
+
+        embed = embed_aniversario(member, nascimento)
         embed.title = f"Bem-vindo(a), {member.display_name}!"
         await canal.send(content=member.mention, embed=embed)
 
 
 @bot.tree.command(
-    name="idade",
-    description="Mostra há quanto tempo a conta Discord de um membro existe",
+    name="aniversario",
+    description="Registra sua data de nascimento e mostra o próximo aniversário",
 )
-@app_commands.describe(usuario="Membro para consultar (padrão: você)")
-@app_commands.cooldown(1, 3.0, app_commands.BucketType.user)
+@app_commands.describe(
+    data_nascimento="Sua data de nascimento no formato AAAA-MM-DD",
+    usuario="Membro para consultar (opcional)",
+)
+@requer_guild()
 async def comando_idade(
     interaction: discord.Interaction,
+    data_nascimento: Optional[str] = None,
     usuario: Optional[discord.Member] = None,
 ):
     alvo = usuario or interaction.user
-    await interaction.response.send_message(embed=embed_idade(alvo), ephemeral=True)
+
+    if data_nascimento is not None:
+        try:
+            nascimento = date.fromisoformat(data_nascimento)
+        except ValueError:
+            await interaction.response.send_message(
+                "Use a data no formato AAAA-MM-DD. Exemplo: `2000-12-25`.",
+                ephemeral=True,
+            )
+            return
+
+        if nascimento > date.today():
+            await interaction.response.send_message(
+                "A data de nascimento não pode ser no futuro.",
+                ephemeral=True,
+            )
+            return
+
+        dados = carregar_aniversarios()
+        guild_key = str(interaction.guild_id)
+        guild_dados = dados.setdefault(guild_key, {})
+        guild_dados[str(interaction.user.id)] = {"nascimento": nascimento.isoformat(), "ultimo_ano": None}
+        salvar_aniversarios(dados)
+
+        await interaction.response.send_message(
+            embed=embed_aniversario(alvo, nascimento),
+            ephemeral=True,
+        )
+        return
+
+    nascimento = obter_aniversario_usuario(interaction.guild_id, alvo.id)
+    if nascimento is None:
+        await interaction.response.send_message(
+            f"{alvo.mention} ainda não cadastrou a data de nascimento."
+            if alvo.id != interaction.user.id
+            else "Você ainda não cadastrou a data de nascimento. Use `/aniversario data_nascimento:AAAA-MM-DD`.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(embed=embed_aniversario(alvo, nascimento), ephemeral=True)
 
 
 @bot.tree.command(
     name="verificar-participantes",
-    description="Lista a idade da conta dos membros no seu canal de voz",
+    description="Lista os aniversários dos membros no seu canal de voz",
 )
-@app_commands.cooldown(1, 10.0, app_commands.BucketType.user)
 @requer_guild()
 async def verificar_participantes(interaction: discord.Interaction):
     membro = interaction.user
@@ -242,8 +358,14 @@ async def verificar_participantes(interaction: discord.Interaction):
         return
 
     linhas = []
-    for p in sorted(participantes, key=lambda x: x.created_at):
-        linhas.append(f"{p.mention} — {formatar_idade_conta(p.created_at)}")
+    for p in sorted(participantes, key=lambda x: x.display_name.lower()):
+        nascimento = obter_aniversario_usuario(interaction.guild_id, p.id)
+        if nascimento is None:
+            linhas.append(f"{p.mention} — sem data de nascimento")
+            continue
+        linhas.append(
+            f"{p.mention} — {nascimento.strftime('%d/%m')} ({formatar_dias_ate_aniversario(nascimento)})"
+        )
 
     embed = discord.Embed(
         title=f"Canal de voz: {canal_voz.name}",
@@ -340,7 +462,7 @@ async def comando_ajuda(interaction: discord.Interaction):
     embed.add_field(
         name="Comandos",
         value=(
-            "`/idade` — consulta idade da conta\n"
+            "`/aniversario` — consulta idade da conta\n"
             "`/verificar-participantes` — canal de voz atual\n"
             "`/config boas-vindas` — boas-vindas (admin)\n"
             "`/privacidade` — política de dados\n"

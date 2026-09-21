@@ -1,6 +1,4 @@
-# Bot Discord — Idade da Conta
-
-Bot utilitário em conformidade com as [diretrizes de desenvolvedores do Discord](https://support-dev.discord.com/hc/en-us/articles/8563934450327-Discord-Developer-Policy). Mostra **há quanto tempo a conta Discord existe** — não a idade real da pessoa.
+Bot utilitário em conformidade com as [diretrizes de desenvolvedores do Discord](https://support-dev.discord.com/hc/en-us/articles/8563934450327-Discord-Developer-Policy). Registra a **data de nascimento** de membros e calcula o **próximo aniversário anual**, além de avisar quando o aniversário cair no dia.
 
 ## Por que é fácil integrar em servidores
 
@@ -31,8 +29,8 @@ https://discord.com/oauth2/authorize?client_id=SEU_APPLICATION_ID&permissions=19
 
 | Comando | Quem pode usar | Descrição |
 |---------|----------------|-----------|
-| `/idade` | Todos | Idade da conta (resposta privada) |
-| `/verificar-participantes` | Todos | Idades no canal de voz atual |
+| `/aniversario` | Todos | Registra ou consulta a data de nascimento e o próximo aniversário |
+| `/verificar-participantes` | Todos | Mostra os aniversários do canal de voz atual |
 | `/config boas-vindas` | Admin | Ativa/desativa boas-vindas |
 | `/ajuda` | Todos | Documentação e conformidade |
 | `/privacidade` | Todos | Política de dados |
@@ -102,9 +100,9 @@ python bot.py
 
 1. Admin com **Gerenciar Servidor** usa o link de convite
 2. Bot entra com permissões mínimas
-3. Membros usam `/idade` (resposta só para quem executou)
+3. Membros usam `/aniversario` (resposta só para quem executou)
 4. *(Opcional)* Admin executa `/config boas-vindas ativar:#canal`
 
-## Limitação
+## Observação
 
-O Discord **não expõe idade real** via API. Este bot mostra apenas a **idade da conta** (data de criação derivada do snowflake ID).
+Este bot usa a **data de nascimento informada pelo usuário** para calcular o aniversário anual e enviar lembretes. A informação é armazenada localmente no arquivo `aniversarios.json` para manter o funcionamento do lembrete anual.
